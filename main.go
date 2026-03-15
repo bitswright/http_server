@@ -10,12 +10,17 @@ import (
 
 // Defining a struct to hold the request information
 type Request struct {
-	Method  string            // "GET", "POST", etc.
-	Path    string            // eg. "/hello", "/", etc.
-	Version string            // "HTTP/1.1", "HTTP/2.0", etc.
-	Headers map[string]string // eg. {"Host": "localhost:8081", "User-Agent": "Mozilla/5.0", etc.}
-	Body    string            // request body (POST/PUT)
+	Method      string            // "GET", "POST", etc.
+	Path        string            // eg. "/hello", "/", etc.
+	QueryParams map[string]string // eg. {"name": "john", "age": "20"}, etc.
+	Version     string            // "HTTP/1.1", "HTTP/2.0", etc.
+	Headers     map[string]string // eg. {"Host": "localhost:8081", "User-Agent": "Mozilla/5.0", etc.}
+	Body        string            // request body (POST/PUT)
 }
+
+// this struct is a contract between the parser and the handler
+// everything downstream (routing, middleware, business logic) will receive a `*Request`
+// designing it well now will save us a lot of time later (refactoring, debugging, maintainability, etc)
 
 // Defining a struct to hold the response information
 type Response struct {
@@ -25,11 +30,62 @@ type Response struct {
 	Body    string            // response body (HTML, JSON, etc.)
 }
 
-// this struct is a contract between the parser and the handler
-// everything downstream (routing, middleware, business logic) will receive a `*Request`
-// designing it well now will save us a lot of time later (refactoring, debugging, maintainability, etc)
+type HandlerFunc func(request *Request) Response
+
+// HandlerFunc is a Go function type with fixed signature (takes a *Request, returns a Response)
+// this contract is to be satisfied by all handlers in the server
+// it is a contract between the router and the handler
+// the router will call the handler with the request and the handler will return the response
+// the router will then write the response to the client
+// the handler will be responsible for handling the request and returning the response
+
+type Router struct {
+	routes map[string]HandlerFunc
+	// in routes key will be "METHOD /path"
+	// O(1) lookup time for routing irrespective of the number of routes
+}
+
+func NewRouter() *Router {
+	return &Router{routes: make(map[string]HandlerFunc)}
+}
+
+// NewRouter() is a constructor function that returns a new Router instance
+// it is important because if routes are not initialized, then a nil map will panic on write
+// hence, NewRouter() gurantees routes map is always ready to use
+
+func (r *Router) Handle(method, path string, handlerFunction HandlerFunc) {
+	key := strings.ToUpper(method) + " " + path
+	r.routes[key] = handlerFunction
+}
+
+func (r *Router) Dispatch(request *Request) Response {
+	key := strings.ToUpper(request.Method) + " " + request.Path
+	handler, ok := r.routes[key]
+
+	if ok {
+		return handler(request)
+	}
+
+	// Path exists but different method -> 405 Method Not Allowed
+	for route := range r.routes {
+		parts := strings.SplitN(route, " ", 2)
+		if parts[1] == request.Path {
+			return Response{Status: 405, Body: "Method not allowed"}
+		}
+	}
+	// For learning purpose, this will be fine -> O(n) lookup time
+	// But in production, we should use a better data structure like a trie -> O(logn) or better lookup time
+	return Response{Status: 404, Body: "Not Found"}
+}
+
+// Dispatch() builds the same key as in the incoming request and looks up the handler function in the router
 
 func main() {
+	router := NewRouter()
+	router.Handle("GET", "/", homeHandler)
+	router.Handle("GET", "/hello", helloHandler)
+	router.Handle("POST", "/echo", echoHandler)
+
 	// 1. Open a TCP socket
 
 	// 1.1. Asking OS to create a TCP socket and bind it to port 8081
@@ -63,51 +119,34 @@ func main() {
 		// until current request/connection is processed
 		fmt.Println("\n\nNew connection accepted")
 		fmt.Println("Handling request...")
-		handleConnection(conn)
+		handleConnection(conn, router)
 	}
 }
 
-func handleConnection(conn net.Conn) {
+func handleConnection(conn net.Conn, router *Router) {
 	// 6. Close the connection after the request is processed
 	// This is important to avoid resource leaks and allow the server to handle multiple connections concurrently
 	defer conn.Close()
 
+	request, err := parseRequest(conn)
+	if err != nil {
+		writeResponse(conn, &Response{Status: 400, Body: "Bad Request: " + err.Error()})
+		return
+	}
+
+	fmt.Printf("--> %s %s\n", request.Method, request.Path)
+	response := router.Dispatch(request)
+	fmt.Printf("<-- %d %s\n", response.Status, response.Body)
+	writeResponse(conn, &response)
+}
+
+func parseRequest(conn net.Conn) (*Request, error) {
 	// 4. Wrap connection in a bufio.Reader and read the request line by line until empty line is encountered
 	reader := bufio.NewReader(conn)
 	// using bufio.Reader because TCP is a stream (any number of bytes can be received in a stream)
 	// we need to accumulate these bytes internally and give clean line-by-line interface to the user
 	// It is one of the problems every HTTP server has to solve
 
-	request, err := parseRequest(reader)
-	response := &Response{}
-	if err != nil {
-		fmt.Println("Error parsing request:", err)
-		response = &Response{
-			Version: "HTTP/1.1",
-			Status:  400,
-			Headers: map[string]string{
-				"Content-Type": "text/plain",
-			},
-			Body: "Bad Request : " + err.Error(),
-		}
-		writeResponse(conn, response)
-	}
-
-	// Routing logic: currently inline in the handleConnection function
-	// will be absracted
-	switch {
-	case request.Method == "GET" && request.Path == "/":
-		writeResponse(conn, &Response{Status: 200, Body: "Home page"})
-
-	case request.Method == "GET" && request.Path == "/hello":
-		writeResponse(conn, &Response{Status: 200, Body: "Hello!"})
-
-	default:
-		writeResponse(conn, &Response{Status: 404, Body: "Not Found"})
-	}
-}
-
-func parseRequest(reader *bufio.Reader) (*Request, error) {
 	requestLine, err := reader.ReadString('\n')
 	if err != nil {
 		return nil, err
@@ -116,6 +155,17 @@ func parseRequest(reader *bufio.Reader) (*Request, error) {
 	requestLineParts := strings.Fields(requestLine)
 	if len(requestLineParts) != 3 {
 		return nil, errors.New("invalid request line")
+	}
+	rawPath := requestLineParts[1]
+	path, rawQuery, _ := strings.Cut(rawPath, "?")
+	queryParams := make(map[string]string)
+	if rawQuery != "" {
+		for _, param := range strings.Split(rawQuery, "&") {
+			key, value, ok := strings.Cut(param, "=")
+			if ok {
+				queryParams[key] = value
+			}
+		}
 	}
 	// strings.Fields splits on any whitespace (spaces, tabs) and ignores leading/trailing whitespace.
 	// It's more robust than strings.Split(line, " ") which breaks on double spaces or tabs.
@@ -178,11 +228,12 @@ func parseRequest(reader *bufio.Reader) (*Request, error) {
 	// and it allows the server to handle requests with large bodies, which is important for streaming media, file uploads, etc.
 
 	return &Request{
-		Method:  requestLineParts[0],
-		Path:    requestLineParts[1],
-		Version: requestLineParts[2],
-		Headers: headers,
-		Body:    body,
+		Method:      requestLineParts[0],
+		Path:        path,
+		QueryParams: queryParams,
+		Version:     requestLineParts[2],
+		Headers:     headers,
+		Body:        body,
 	}, nil
 }
 
@@ -210,10 +261,34 @@ func getStatusText(status int) string {
 		200: "OK",
 		400: "Bad Request",
 		404: "Not Found",
+		405: "Method Not Allowed",
 		500: "Internal Server Error",
 	}
 	if text, ok := statusTextMap[status]; ok {
 		return text
 	}
 	return "undefined"
+}
+
+// each handler is a function that takes a *Request, do it's logic and returns a Response
+// no frameworkmagic just a function
+
+func homeHandler(request *Request) Response {
+	return Response{Status: 200, Body: "Welcome!"}
+}
+
+func helloHandler(request *Request) Response {
+	name := "world"
+	if nameValue, ok := request.QueryParams["name"]; ok {
+		name = nameValue
+	}
+	message := "Hello, " + name + "!"
+	return Response{Status: 200, Body: message}
+}
+
+func echoHandler(request *Request) Response {
+	if request.Body == "" {
+		return Response{Status: 400, Body: "Send a body to echo"}
+	}
+	return Response{Status: 200, Body: request.Body}
 }
