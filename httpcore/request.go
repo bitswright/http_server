@@ -3,8 +3,9 @@ package httpcore
 import (
 	"bufio"
 	"errors"
-	"fmt"
+	"io"
 	"net"
+	"strconv"
 	"strings"
 )
 
@@ -83,23 +84,17 @@ func parseRequest(conn net.Conn) (*Request, error) {
 	//     POST /login with a JSON body, form submissions, file uploads —
 	//     all of these rely on Content-Length to tell the server where the body ends.
 	body := ""
-	if contentLength, ok := headers["content-length"]; ok {
-		length := 0
-		_, err := fmt.Sscanf(contentLength, "%d", &length)
-		// fmt.Sscanf is used to parse the content length string into an integer
-		// it returns the number of items successfully parsed and assigned
-		// and an error if the string is not a valid integer
-		// we don't need the number of items, so we ignore it
-		// and we check if the error is nil
+	if contentLengthString, ok := headers["content-length"]; ok {
+		length, err := strconv.Atoi(contentLengthString)
 		if err != nil {
 			return nil, err
 		}
 
 		if length > 0 {
 			bodyBytes := make([]byte, length)
-			reader.Read(bodyBytes)
-			// reader.Read() shouldn't be used without knowing how many bytes to expect.
-			// On a GET request with no body, Read() would hang waiting for data that isn't coming.
+			if _, err := io.ReadFull(reader, bodyBytes); err != nil {
+				return nil, err
+			}
 			body = string(bodyBytes)
 		}
 	}

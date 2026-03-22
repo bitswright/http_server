@@ -26,9 +26,9 @@ func NewRouter() *Router {
 // NewRouter() is a constructor function that returns a new Router instance
 // it is important because if routes are not initialized, then a nil map will panic on write
 // hence, NewRouter() gurantees routes map is always ready to use
-func (r *Router) Handle(method, path string, handlerFunction HandlerFunc) {
+func (r *Router) Handle(method, path string, fn HandlerFunc) {
 	key := strings.ToUpper(method) + " " + path
-	r.routes[key] = handlerFunction
+	r.routes[key] = fn
 }
 
 // Dispatch() builds the same key as in the incoming request and looks up the handler function in the router
@@ -44,10 +44,10 @@ func (r *Router) Dispatch(request *Request) Response {
 	for route := range r.routes {
 		parts := strings.SplitN(route, " ", 2)
 		if parts[1] == request.Path {
-			return Response{Status: 405, Body: "Method not allowed"}
+			return Response{Status: StatusMethodNotAllowed, Body: "Method not allowed"}
 		}
 	}
 	// For learning purpose, this will be fine -> O(n) lookup time
 	// But in production, we should use a better data structure like a trie -> O(logn) or better lookup time
-	return Response{Status: 404, Body: "Not Found"}
+	return Response{Status: StatusNotFound, Body: "Not Found"}
 }

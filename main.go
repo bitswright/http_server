@@ -1,7 +1,7 @@
 package main
 
 import (
-	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -9,6 +9,8 @@ import (
 	"github.com/bitswright/http_server/handlers"
 	"github.com/bitswright/http_server/httpcore"
 )
+
+const staticDir = "./static"
 
 func main() {
 	//creating static files
@@ -30,8 +32,8 @@ func main() {
 		panic(err)
 	}
 	defer listener.Close()
-	fmt.Println("Server is running on port 8081")
-	fmt.Println("Waiting for incoming connections...")
+	log.Printf("server is running on port 8081")
+	log.Printf("waiting for incoming connections...")
 
 	// 2. Block and wait for incoming connections
 	for {
@@ -40,7 +42,7 @@ func main() {
 		// TCP 3-way handshake is handled in Accept (SYN -> SYN-ACK -> ACK) before returning
 		// hence, conn is a live TCP connection
 		if err != nil {
-			fmt.Println("Error accepting connection:", err)
+			log.Printf("error accepting connection: %v", err)
 			continue
 		}
 
@@ -49,13 +51,11 @@ func main() {
 		// giving away request processing to a separate function
 		// if this function is not made to be a goroutine, then the server will be blocked and unable to accept new connections
 		// until current request/connection is processed
-		fmt.Println("\n\nNew connection accepted")
-		fmt.Println("Handling request...")
-		httpcore.HandleConnection(conn, router)
+		log.Printf("new connection accepted from %s", conn.RemoteAddr())
+		log.Printf("handling request...")
+		httpcore.HandleConnection(conn, router, staticDir)
 	}
 }
-
-const staticDir = "./static"
 
 func createStaticPages() {
 	os.MkdirAll(staticDir, 0755)

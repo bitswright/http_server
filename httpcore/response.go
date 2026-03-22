@@ -2,7 +2,10 @@ package httpcore
 
 import (
 	"fmt"
+	"log"
 	"net"
+	"strconv"
+	"strings"
 )
 
 // Defining a struct to hold the response information
@@ -15,42 +18,32 @@ type Response struct {
 
 func writeResponse(conn net.Conn, response *Response) {
 	statusText := getStatusText(response.Status)
-	contentLength := fmt.Sprintf("%d", len(response.Body))
+	contentLength := strconv.Itoa(len(response.Body))
 	if response.Headers == nil {
 		response.Headers = make(map[string]string)
 	}
 	response.Headers["content-length"] = contentLength
-	if response.Version == "" {
-		response.Version = "HTTP/1.1"
+	version := response.Version
+	if version == "" {
+		version = "HTTP/1.1"
 	}
-	rawResponse := fmt.Sprintf("%s %d %s\r\n", response.Version, response.Status, statusText)
+	var rawResponseStringBuilder strings.Builder
+	rawResponseStringBuilder.WriteString(fmt.Sprintf("%s %d %s\r\n", version, response.Status, statusText))
 	for key, value := range response.Headers {
-		rawResponse += fmt.Sprintf("%s: %s\r\n", key, value)
+		rawResponseStringBuilder.WriteString(fmt.Sprintf("%s: %s\r\n", key, value))
 	}
-	rawResponse += "\r\n" + response.Body
+	rawResponseStringBuilder.WriteString("\r\n")
+	rawResponseStringBuilder.WriteString(response.Body)
 
-	conn.Write([]byte(rawResponse))
-}
-
-// TODO: To be moved to another file later
-func getStatusText(status int) string {
-	statusTextMap := map[int]string{
-		200: "OK",
-		400: "Bad Request",
-		404: "Not Found",
-		405: "Method Not Allowed",
-		500: "Internal Server Error",
+	if _, err := conn.Write([]byte(rawResponseStringBuilder.String())); err != nil {
+		log.Printf("failed to write response to %s: %v", conn.RemoteAddr(), err)
 	}
-	if text, ok := statusTextMap[status]; ok {
-		return text
-	}
-	return "undefined"
 }
 
 func fileNotFoundResponse() Response {
-	return Response{Status: 404, Body: "File not found"}
+	return Response{Status: StatusNotFound, Body: "File not found"}
 }
 
 func internalServerErrorResponse() Response {
-	return Response{Status: 500, Body: "Internal server error"}
+	return Response{Status: StatusInternalServerError, Body: "Internal server error"}
 }

@@ -1,7 +1,7 @@
 package httpcore
 
 import (
-	"fmt"
+	"log"
 	"mime"
 	"net"
 	"os"
@@ -9,33 +9,31 @@ import (
 	"strings"
 )
 
-func HandleConnection(conn net.Conn, router *Router) {
+func HandleConnection(conn net.Conn, router *Router, staticDir string) {
 	// 6. Close the connection after the request is processed
 	// This is important to avoid resource leaks and allow the server to handle multiple connections concurrently
 	defer conn.Close()
 
 	request, err := parseRequest(conn)
 	if err != nil {
-		writeResponse(conn, &Response{Status: 400, Body: "Bad Request: " + err.Error()})
+		writeResponse(conn, &Response{Status: StatusBadRequest, Body: "Bad Request: " + err.Error()})
 		return
 	}
 
-	fmt.Printf("--> %s %s\n", request.Method, request.Path)
+	log.Printf("new request: %s %s", request.Method, request.Path)
 	var response Response
 	if strings.HasPrefix(request.Path, "/static/") {
 		// pragmatic shortcut, production routers handles prefix matching inside router itself using trie
-		response = staticHandler(request)
+		response = staticHandler(request, staticDir)
 	} else {
 		response = router.Dispatch(request)
 	}
-	fmt.Printf("<-- %d %s\n", response.Status, response.Body)
+	log.Printf("response: %d %s", response.Status, response.Body)
 
 	writeResponse(conn, &response)
 }
 
-const staticDir = "./static"
-
-func staticHandler(request *Request) Response {
+func staticHandler(request *Request, staticDir string) Response {
 	// 1. Stripping /static/ (if exists) from the path to get the relative file path
 	relativePath := strings.TrimPrefix(request.Path, "/static/")
 	if relativePath == "" {
